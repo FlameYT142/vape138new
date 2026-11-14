@@ -23,7 +23,8 @@ async def trainee_warn(message: Message, bot: Bot, db_user):
     args = message.text.split()[1:]
     if not args:
         return await message.reply(ERR_ARGS)
-    # цель
+    
+    # ФИКС: Если это реплай, берем ID из реплая, а аргументы — это причина
     if message.reply_to_message and message.reply_to_message.from_user:
         u = message.reply_to_message.from_user
         target_id, target_username, rest = u.id, u.username or str(u.id), args
