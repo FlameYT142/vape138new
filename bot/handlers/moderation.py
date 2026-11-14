@@ -28,6 +28,7 @@ async def resolve_target(message: Message, bot: Bot, args):
         return u.id, u.username or str(u.id), row["role"], args
     if not args or not args[0].startswith("@"):
         return None, None, None, args
+    
     uname = args[0].lstrip("@")
     try:
         m = await bot.get_chat_member(message.chat.id, f"@{uname}")
@@ -35,7 +36,15 @@ async def resolve_target(message: Message, bot: Bot, args):
         row = await get_user(u.id)
         return u.id, u.username or str(u.id), row["role"], args[1:]
     except Exception:
-        return None, None, None, args
+        try:
+            async for msg in bot.get_chat_history(message.chat.id, limit=100):
+                if msg.from_user and msg.from_user.username and msg.from_user.username.lower() == uname.lower():
+                    u = msg.from_user
+                    row = await get_user(u.id)
+                    return u.id, u.username, row["role"], args[1:]
+        except Exception:
+            pass
+    return None, None, None, args
 
 def calc_duration(rule, target_role, recurrent):
     if rule["special"] == "ban":
@@ -98,15 +107,26 @@ async def apply_mute_and_report(bot, chat_id, target_id, target_username, target
         await add_log(actor_id, target_id, "mute", rule_code, None, duration, chat_id)
     return text, None
 
+def appeal_kb_safe(app_id):
+    from bot.keyboards import appeal_kb
+    return appeal_kb(app_id)
+
 @router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("мут", "mute"))
 async def cmd_mute(message: Message, bot: Bot, db_user):
     if message.chat.id == CHAT_TRAINEE:
         return await message.reply(ERR_TRAINEE_CHAT_ONLY_WARN)
+    
     args = message.text.split()[1:]
     if not args:
         return await message.reply(ERR_ARGS)
 
-    target_id, target_username, target_role, rest = await resolve_target(message, bot, args)
+    # ФИКС: Если это реплай, аргументы — это правила, а ID берем из реплая
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id, target_username, target_role, _ = await resolve_target(message, bot, [])
+        rest = args
+    else:
+        target_id, target_username, target_role, rest = await resolve_target(message, bot, args)
+
     if target_id is None:
         return await message.reply(ERR_TARGET)
 
@@ -220,10 +240,6 @@ async def cmd_mute(message: Message, bot: Bot, db_user):
         return
     await message.reply(ERR_NEED_RULE)
 
-def appeal_kb_safe(app_id):
-    from bot.keyboards import appeal_kb
-    return appeal_kb(app_id)
-
 @router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("размут", "unmute"))
 async def cmd_unmute(message: Message, bot: Bot, db_user):
     if message.chat.id == CHAT_TRAINEE:
@@ -251,7 +267,13 @@ async def cmd_kick(message: Message, bot: Bot, db_user):
     args = message.text.split()[1:]
     if not args:
         return await message.reply(ERR_ARGS)
-    target_id, target_username, _, rest = await resolve_target(message, bot, args)
+        
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id, target_username, _, _ = await resolve_target(message, bot, [])
+        rest = args
+    else:
+        target_id, target_username, _, rest = await resolve_target(message, bot, args)
+
     if target_id is None:
         return await message.reply(ERR_TARGET)
     reason = " ".join(rest) if rest else "—"
@@ -281,10 +303,17 @@ async def cmd_warn(message: Message, bot: Bot, db_user):
     args = message.text.split()[1:]
     if not args:
         return await message.reply(ERR_ARGS)
-    target_id, target_username, target_role, rest = await resolve_target(message, bot, args)
+
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id, target_username, target_role, _ = await resolve_target(message, bot, [])
+        rest = args
+    else:
+        target_id, target_username, target_role, rest = await resolve_target(message, bot, args)
+
     if target_id is None:
         return await message.reply(ERR_TARGET)
     reason = " ".join(rest) if rest else "—"
+    
     if target_role == "owner":
         return await message.reply(ERR_OWNER_IMMUNE)
     if target_role in ("blat", "partner"):
