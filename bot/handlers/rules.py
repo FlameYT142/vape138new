@@ -1,11 +1,10 @@
-from aiogram import Router
+from aiogram import Router, Bot
 from aiogram.types import Message
 from bot.config import role_level, is_tech_admin
 from bot.models import (get_rule, get_all_rules, add_rule, delete_rule,
                         set_rule_active, set_rule_critical)
 from bot.texts import *
 from bot.utils import parse_duration
-from bot.keyboards import rules_kb
 
 router = Router()
 
@@ -109,19 +108,51 @@ async def cmd_rules(message: Message, db_user):
         return await message.reply(ERR_NO_RIGHTS)
     await send_rules_page(message, 0)
 
-async def send_rules_page(message_or_call, page):
+async def send_rules_page(message_or_call, page=0):
     all_rules = await get_all_rules()
-    per_page = 10
-    total_pages = max(1, (len(all_rules) + per_page - 1) // per_page)
-    page = max(0, min(page, total_pages - 1))
-    chunk = all_rules[page*per_page:(page+1)*per_page]
-    lines = [f"📋 <b>Правила чата</b> (стр. {page+1}/{total_pages})"]
-    for r in chunk:
-        mark = " 🔕" if not r["active"] else ""
-        crit = " ⚠️" if r["critical"] else ""
-        lines.append(f"{r['code']} — {r['text']} — {r['duration_text']}{mark}{crit}")
+    
+    # Группируем правила по блокам
+    categories = {
+        "💬 Общение": ["1", "2.1", "2.2", "3", "4", "5"],
+        "🛒 Барахолка и продажи": ["6", "7", "8", "9", "10", "11", "12", "14"],
+        "📢 Реклама и конкуренция": ["15", "16", "17", "18"],
+        "🤖 Боты и автоматизация": ["19"],
+        "📩 Личные сообщения": ["20", "21"],
+        "⏰ Общение и время": ["22"],
+        "🚫 Строго запрещено (сразу бан)": ["23", "24", "25", "26", "27"]
+    }
+    
+    lines = ["📋 <b>Правила чата</b>\n"]
+    
+    for cat_name, codes in categories.items():
+        cat_rules = [r for r in all_rules if r["code"] in codes]
+        if not cat_rules:
+            continue
+            
+        lines.append(f"<b>{cat_name}</b>")
+        for r in cat_rules:
+            mark = " 🔕" if not r["active"] else ""
+            lines.append(f"{r['code']} — {r['text']} — {r['duration_text']}{mark}")
+        lines.append("") # Пустая строка между блоками
+
+    lines.append("⚠️ <i>Администрация не несёт ответственности за сделки между участниками. Продажа вейп-продукции несовершеннолетним запрещена по ФЗ № 15-ФЗ — сообщения от несовершеннолетних в барахолке удаляются.</i>")
+
     text = "\n".join(lines)
-    if hasattr(message_or_call, "message"):
-        await message_or_call.message.edit_text(text, reply_markup=rules_kb(page, total_pages))
+    
+    # Отправляем или редактируем сообщение
+    if len(text) > 4000:
+        parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+        for part in parts:
+            if hasattr(message_or_call, "message"):
+                await message_or_call.message.answer(part)
+            else:
+                await message_or_call.answer(part)
     else:
-        await message_or_call.answer(text, reply_markup=rules_kb(page, total_pages))
+        if hasattr(message_or_call, "message"):
+            try:
+                await message_or_call.message.edit_text(text)
+            except Exception:
+                # Если сообщение не изменилось, просто игнорируем ошибку
+                pass
+        else:
+            await message_or_call.answer(text)
