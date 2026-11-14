@@ -22,28 +22,41 @@ def full_mute_permissions():
         can_change_info=False, can_invite_users=False, can_pin_messages=False)
 
 async def resolve_target(message: Message, bot: Bot, args):
+    # 1. Реплай
     if message.reply_to_message and message.reply_to_message.from_user:
         u = message.reply_to_message.from_user
         row = await get_user(u.id)
         return u.id, u.username or str(u.id), row["role"], args
-    if not args or not args[0].startswith("@"):
-        return None, None, None, args
     
-    uname = args[0].lstrip("@")
-    try:
-        m = await bot.get_chat_member(message.chat.id, f"@{uname}")
-        u = m.user
-        row = await get_user(u.id)
-        return u.id, u.username or str(u.id), row["role"], args[1:]
-    except Exception:
+    if not args:
+        return None, None, None, args
+        
+    target_raw = args[0]
+
+    # 2. Прямой ID (цифры)
+    if target_raw.isdigit():
+        target_id = int(target_raw)
+        row = await get_user(target_id)
+        return target_id, str(target_id), row["role"], args[1:]
+
+    # 3. @username
+    if target_raw.startswith("@"):
+        uname = target_raw.lstrip("@")
         try:
-            async for msg in bot.get_chat_history(message.chat.id, limit=100):
-                if msg.from_user and msg.from_user.username and msg.from_user.username.lower() == uname.lower():
-                    u = msg.from_user
-                    row = await get_user(u.id)
-                    return u.id, u.username, row["role"], args[1:]
+            m = await bot.get_chat_member(message.chat.id, f"@{uname}")
+            u = m.user
+            row = await get_user(u.id)
+            return u.id, u.username or str(u.id), row["role"], args[1:]
         except Exception:
-            pass
+            try:
+                async for msg in bot.get_chat_history(message.chat.id, limit=100):
+                    if msg.from_user and msg.from_user.username and msg.from_user.username.lower() == uname.lower():
+                        u = msg.from_user
+                        row = await get_user(u.id)
+                        return u.id, u.username, row["role"], args[1:]
+            except Exception:
+                pass
+                
     return None, None, None, args
 
 def calc_duration(rule, target_role, recurrent):
@@ -120,18 +133,22 @@ async def cmd_mute(message: Message, bot: Bot, db_user):
     if not args:
         return await message.reply(ERR_ARGS)
 
-    # ФИКС: Если это реплай, аргументы — это правила, а ID берем из реплая
+    # ЖЕЛЕЗОБЕТОННАЯ ЛОГИКА РЕПЛАЯ
     if message.reply_to_message and message.reply_to_message.from_user:
-        target_id, target_username, target_role, _ = await resolve_target(message, bot, [])
-        rest = args
+        u = message.reply_to_message.from_user
+        target_id = u.id
+        target_username = u.username or str(u.id)
+        row = await get_user(target_id)
+        target_role = row["role"]
+        rest = args  # Все аргументы (номер правила) идут сюда
     else:
         target_id, target_username, target_role, rest = await resolve_target(message, bot, args)
-
-    if target_id is None:
-        return await message.reply(ERR_TARGET)
+        if target_id is None:
+            return await message.reply(ERR_TARGET)
 
     actor = db_user
     actor_level = role_level(actor["role"])
+    
     if not rest:
         return await message.reply(ERR_ARGS)
 
@@ -249,7 +266,13 @@ async def cmd_unmute(message: Message, bot: Bot, db_user):
     args = message.text.split()[1:]
     if not args:
         return await message.reply(ERR_ARGS)
-    target_id, target_username, _, _ = await resolve_target(message, bot, args)
+        
+    if message.reply_to_message and message.reply_to_message.from_user:
+        u = message.reply_to_message.from_user
+        target_id, target_username = u.id, u.username or str(u.id)
+    else:
+        target_id, target_username, _, _ = await resolve_target(message, bot, args)
+        
     if target_id is None:
         return await message.reply(ERR_TARGET)
     try:
@@ -269,8 +292,8 @@ async def cmd_kick(message: Message, bot: Bot, db_user):
         return await message.reply(ERR_ARGS)
         
     if message.reply_to_message and message.reply_to_message.from_user:
-        target_id, target_username, _, _ = await resolve_target(message, bot, [])
-        rest = args
+        u = message.reply_to_message.from_user
+        target_id, target_username, rest = u.id, u.username or str(u.id), args
     else:
         target_id, target_username, _, rest = await resolve_target(message, bot, args)
 
@@ -305,8 +328,10 @@ async def cmd_warn(message: Message, bot: Bot, db_user):
         return await message.reply(ERR_ARGS)
 
     if message.reply_to_message and message.reply_to_message.from_user:
-        target_id, target_username, target_role, _ = await resolve_target(message, bot, [])
-        rest = args
+        u = message.reply_to_message.from_user
+        target_id, target_username, rest = u.id, u.username or str(u.id), args
+        row = await get_user(target_id)
+        target_role = row["role"]
     else:
         target_id, target_username, target_role, rest = await resolve_target(message, bot, args)
 
