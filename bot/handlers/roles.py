@@ -25,6 +25,12 @@ async def resolve_target_username(message: Message, bot: Bot, args):
         m = await bot.get_chat_member(message.chat.id, f"@{uname}")
         return m.user.id, m.user.username or str(m.user.id), args[1:]
     except Exception:
+        try:
+            async for msg in bot.get_chat_history(message.chat.id, limit=100):
+                if msg.from_user and msg.from_user.username and msg.from_user.username.lower() == uname.lower():
+                    return msg.from_user.id, msg.from_user.username, args[1:]
+        except Exception:
+            pass
         return None, None, args
 
 @router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("выдать", "setrole"))
@@ -32,16 +38,28 @@ async def cmd_grant(message: Message, bot: Bot, db_user):
     if message.chat.type != "private":
         return await message.reply(ERR_DM_ONLY)
     args = message.text.split()[1:]
-    target_id, target_username, rest = await resolve_target_username(message, bot, args)
+    if not args:
+        return await message.reply(ERR_ARGS)
+        
+    # Если это реплай, то args — это просто роль
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id, target_username, rest = await resolve_target_username(message, bot, [])
+        rest = args
+    else:
+        target_id, target_username, rest = await resolve_target_username(message, bot, args)
+
     if target_id is None or not rest:
         return await message.reply(ERR_ARGS)
+        
     role_key = find_role_key(" ".join(rest))
     if not role_key:
         return await message.reply("❌ Неизвестная роль.")
+        
     actor = db_user
     actor_id = actor["telegram_id"]
     actor_role = actor["role"]
     tech = is_tech_admin(actor_id)
+    
     if tech and role_key in OWNER_ONLY_TARGETS:
         return await message.reply(ERR_NO_RIGHTS)
     need_level = role_level(role_key)
@@ -54,6 +72,7 @@ async def cmd_grant(message: Message, bot: Bot, db_user):
     if role_key == "vip":
         if not tech and actor_lvl < role_level("deputy_head"):
             return await message.reply(ERR_NO_RIGHTS)
+            
     await set_user_role(target_id, role_key)
     await message.answer(role_grant(target_username, role_label(role_key), role_level(role_key), actor["username"]))
     await bot.send_message(LOG_CHAT_ID,
@@ -64,7 +83,14 @@ async def cmd_demote(message: Message, bot: Bot, db_user):
     if message.chat.type != "private":
         return await message.reply(ERR_DM_ONLY)
     args = message.text.split()[1:]
-    target_id, target_username, _ = await resolve_target_username(message, bot, args)
+    if not args:
+        return await message.reply(ERR_ARGS)
+        
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id, target_username, _ = await resolve_target_username(message, bot, [])
+    else:
+        target_id, target_username, _ = await resolve_target_username(message, bot, args)
+
     if target_id is None:
         return await message.reply(ERR_ARGS)
     target = await get_user(target_id)
@@ -87,7 +113,14 @@ async def cmd_unban(message: Message, bot: Bot, db_user):
     if role_level(db_user["role"]) < role_level("deputy_head") and not is_tech_admin(db_user["telegram_id"]):
         return await message.reply(ERR_NO_RIGHTS)
     args = message.text.split()[1:]
-    target_id, target_username, _ = await resolve_target_username(message, bot, args)
+    if not args:
+        return await message.reply(ERR_ARGS)
+        
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id, target_username, _ = await resolve_target_username(message, bot, [])
+    else:
+        target_id, target_username, _ = await resolve_target_username(message, bot, args)
+
     if target_id is None:
         return await message.reply(ERR_ARGS)
     try:
