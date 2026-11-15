@@ -9,6 +9,7 @@ from bot.utils import parse_duration
 router = Router()
 
 def has_tech_rights(user_id, db_user):
+    # Даем доступ, если это Тех-админ (по ID) ИЛИ его роль Руководитель+
     return is_tech_admin(user_id) or role_level(db_user["role"]) >= role_level("head")
 
 def is_dm(message):
@@ -152,7 +153,6 @@ async def send_rules_page(message_or_call, page=0):
             try:
                 await message_or_call.message.edit_text(text)
             except Exception:
-                # Если сообщение не изменилось, просто игнорируем ошибку
                 pass
         else:
             await message_or_call.answer(text)
