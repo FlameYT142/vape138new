@@ -80,12 +80,14 @@ async def init_db():
     await db.executescript(SCHEMA)
     await db.commit()
     await db.close()
+    
     for oid in OWNER_IDS:
         await execute("INSERT INTO users (telegram_id, role) VALUES (?, 'owner') "
                       "ON CONFLICT(telegram_id) DO UPDATE SET role='owner'", (oid,))
+                      
     for tid in TECH_ADMIN_IDS:
-        await execute("INSERT INTO users (telegram_id, role) VALUES (?, 'tech_admin') "
-                      "ON CONFLICT(telegram_id) DO UPDATE SET role='tech_admin'", (tid,))
+        # Теперь бот не будет перезаписывать роль тех-админа, если он уже есть в базе
+        await execute("INSERT OR IGNORE INTO users (telegram_id, role) VALUES (?, 'deputy_head')", (tid,))
 
 async def get_user(tg_id):
     row = await fetchone("SELECT * FROM users WHERE telegram_id=?", (tg_id,))
