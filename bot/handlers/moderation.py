@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from aiogram import Router, Bot
 from aiogram.types import Message, ChatPermissions
 from bot.config import LOG_CHAT_ID, CHAT_TRAINEE, role_level, role_label
-from bot.models import (get_user, get_rule, add_warn, count_warns, add_log,
+from bot.models import (get_user, get_rule, add_warn, count_warns, get_warns, clear_warns, add_log,
                         has_recurrence, create_application, schedule_delete,
                         save_pending_fsm, get_expired_fsm, delete_fsm, set_user_role)
 from bot.texts import *
@@ -69,34 +69,38 @@ def appeal_kb_safe(app_id):
     from bot.keyboards import appeal_kb
     return appeal_kb(app_id)
 
-@router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("мут", "mute"))
+# Строгий фильтр: только .мут, /мут, .mute, /mute
+@router.message(lambda m: m.text and m.text.startswith((".мут", "/мут", ".mute", "/mute")))
 async def cmd_mute(message: Message, bot: Bot, db_user):
     if message.chat.id == CHAT_TRAINEE:
         return await message.reply(ERR_TRAINEE_CHAT_ONLY_WARN)
     
-    # 1. Если это реплай
     if message.reply_to_message and message.reply_to_message.from_user:
         u = message.reply_to_message.from_user
-        target_id, target_username, target_role = u.id, u.username or str(u.id), (await get_user(u.id))["role"]
+        target_id = u.id
+        target_username = u.username or str(u.id)
+        target_role = (await get_user(u.id))["role"]
         args = message.text.split()[1:]
     else:
-        # 2. Если написан @username или ID
         parts = message.text.split(maxsplit=2)
-        if len(parts) < 3:
-            return await message.reply("❌ Укажите, кого мутить (реплаем или @username) и правило. Пример: `.мут @user 1`")
+        if len(parts) < 2:
+            return await message.reply("❌ Укажите, кого мутить (реплаем или @username).")
         
         target_id, target_username, target_role = await get_target(message, bot, parts[1])
         if target_id is None:
             return await message.reply("❌ Пользователь не найден.")
-        args = [parts[2]]
+        args = [parts[2]] if len(parts) > 2 else []
 
-    # Логика
     if target_role == "owner":
         return await message.reply(ERR_OWNER_IMMUNE)
         
-    raw_rule = args[0].lower()
-    forever = raw_rule in ("навсегда", "forever")
-    rule_code = args[1] if forever and len(args) > 1 else (None if forever else raw_rule)
+    if not args:
+        rule_code = "1" # По умолчанию спам
+        forever = False
+    else:
+        raw_rule = args[0].lower()
+        forever = raw_rule in ("навсегда", "forever")
+        rule_code = args[1] if forever and len(args) > 1 else (None if forever else raw_rule)
 
     if rule_code:
         if role_level(db_user["role"]) < role_level("moderator"):
@@ -132,12 +136,12 @@ async def cmd_mute(message: Message, bot: Bot, db_user):
         await bot.send_message(LOG_CHAT_ID, f"🔨 ДЕЙСТВИЕ\nКто: @{db_user['username']}\nКого: {target_username}\nПравило: {rule_code}")
         return
 
-    # Если правила нет — заявка
     await message.reply(MSG_APPEAL_SENT)
     app_id = await create_application(db_user["telegram_id"], target_id, message.chat.id, "mute", None, " ".join(args))
     await send_appeal(bot, app_id, "⚠️ НОВАЯ ЗАЯВКА НА МУТ", f"👤 @{db_user['username']}\n🎯 {target_username}\n📝 {' '.join(args)}", appeal_kb_safe(app_id))
 
-@router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("размут", "unmute"))
+# Строгий фильтр: .размут
+@router.message(lambda m: m.text and m.text.startswith((".размут", "/размут", ".unmute", "/unmute")))
 async def cmd_unmute(message: Message, bot: Bot, db_user):
     if role_level(db_user["role"]) < role_level("senior_mod"):
         return await message.reply(ERR_NO_RIGHTS)
@@ -159,7 +163,8 @@ async def cmd_unmute(message: Message, bot: Bot, db_user):
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
 
-@router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("кик", "kick"))
+# Строгий фильтр: .кик
+@router.message(lambda m: m.text and m.text.startswith((".кик", "/кик", ".kick", "/kick")))
 async def cmd_kick(message: Message, bot: Bot, db_user):
     if role_level(db_user["role"]) < role_level("deputy_head"):
         return await message.reply(ERR_NO_RIGHTS)
@@ -185,7 +190,8 @@ async def cmd_kick(message: Message, bot: Bot, db_user):
     except Exception as e:
         await message.reply(f"❌ Ошибка: {e}")
 
-@router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("варн", "warn") and m.chat.id != CHAT_TRAINEE)
+# Строгий фильтр: .варн
+@router.message(lambda m: m.text and m.text.startswith((".варн", "/варн", ".warn", "/warn")) and m.chat.id != CHAT_TRAINEE)
 async def cmd_warn(message: Message, bot: Bot, db_user):
     if role_level(db_user["role"]) < role_level("senior_mod"):
         return await message.reply(ERR_NO_RIGHTS)
@@ -208,7 +214,6 @@ async def cmd_warn(message: Message, bot: Bot, db_user):
     await message.answer(warn_report(target_username, count, 3, db_user["username"], reason))
     await add_log(db_user["telegram_id"], target_id, "warn", None, reason, None, message.chat.id)
 
-    # Логика авто-понижения
     user = await get_user(target_id)
     current = user["role"]
     if current == "moderator" and user["demoted_before"] and count >= 2:
@@ -225,7 +230,8 @@ async def cmd_warn(message: Message, bot: Bot, db_user):
             await set_user_role(target_id, "member")
             await message.answer(f"⬇️ @{target_username} снят с роли (3 варна).")
 
-@router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("варны", "warns"))
+# Строгий фильтр: .варны
+@router.message(lambda m: m.text and m.text.startswith((".варны", "/варны", ".warns", "/warns")))
 async def cmd_warns(message: Message, bot: Bot, db_user):
     if role_level(db_user["role"]) < role_level("senior_mod"):
         return await message.reply(ERR_NO_RIGHTS)
@@ -248,6 +254,34 @@ async def cmd_warns(message: Message, bot: Bot, db_user):
         lines.append(f"{i}. {w['created_at'][:10]} — {w['reason'] or '—'}")
     lines.append(f"\nВсего активных: <b>{len(warns)}/3</b>")
     await message.answer("\n".join(lines))
+
+# Строгий фильтр: .снятьварн
+@router.message(lambda m: m.text and m.text.startswith((".снятьварн", "/снятьварн", ".unwarn", "/unwarn")))
+async def cmd_unwarn(message: Message, bot: Bot, db_user):
+    if role_level(db_user["role"]) < role_level("senior_mod"):
+        return await message.reply(ERR_NO_RIGHTS)
+        
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id = message.reply_to_message.from_user.id
+        target_username = message.reply_to_message.from_user.username or str(target_id)
+    else:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2: return await message.reply(ERR_ARGS)
+        target_id, target_username, _ = await get_target(message, bot, parts[1])
+        
+    if target_id is None: return await message.reply(ERR_TARGET)
+    
+    from bot.db import execute, fetchone
+    last_warn = await fetchone("SELECT id FROM warns WHERE user_id=? ORDER BY id DESC LIMIT 1", (target_id,))
+    
+    if not last_warn:
+        return await message.answer(f"📋 У @{target_username} нет варнов для снятия.")
+        
+    await execute("DELETE FROM warns WHERE id=?", (last_warn["id"],))
+    count = await count_warns(target_id)
+    
+    await message.answer(f"✅ С @{target_username} снят 1 варн.\n⚠️ Осталось активных: {count}/3")
+    await add_log(db_user["telegram_id"], target_id, "unwarn", None, None, None, message.chat.id)
 
 @router.message(lambda m: m.chat.type == "private" and m.text and m.text.strip() in ("24", "48", "72"))
 async def cmd_mute20_reply(message: Message, bot: Bot):
