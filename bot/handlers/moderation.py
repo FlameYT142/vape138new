@@ -207,3 +207,82 @@ async def cmd_warn(message: Message, bot: Bot, db_user):
     count = await count_warns(target_id)
     await message.answer(warn_report(target_username, count, 3, db_user["username"], reason))
     await add_log(db_user["telegram_id"], target_id, "warn", None, reason, None, message.chat.id)
+
+    # Логика авто-понижения
+    user = await get_user(target_id)
+    current = user["role"]
+    if current == "moderator" and user["demoted_before"] and count >= 2:
+        await set_user_role(target_id, "member")
+        await message.answer(f"⬇️ @{target_username} снят с роли полностью (2/2 варна).")
+        return
+    if count >= 3:
+        if current == "moderator":
+            await set_user_role(target_id, "trainee")
+            from bot.db import execute
+            await execute("UPDATE users SET demoted_before=1 WHERE telegram_id=?", (target_id,))
+            await message.answer(f"⬇️ @{target_username} понижен до Стажёра (3 варна).")
+        elif current == "trainee":
+            await set_user_role(target_id, "member")
+            await message.answer(f"⬇️ @{target_username} снят с роли (3 варна).")
+
+@router.message(lambda m: m.text and m.text.split()[0].lower().lstrip("./") in ("варны", "warns"))
+async def cmd_warns(message: Message, bot: Bot, db_user):
+    if role_level(db_user["role"]) < role_level("senior_mod"):
+        return await message.reply(ERR_NO_RIGHTS)
+        
+    if message.reply_to_message and message.reply_to_message.from_user:
+        target_id = message.reply_to_message.from_user.id
+        target_username = message.reply_to_message.from_user.username or str(target_id)
+    else:
+        parts = message.text.split(maxsplit=1)
+        if len(parts) < 2: return await message.reply(ERR_ARGS)
+        target_id, target_username, _ = await get_target(message, bot, parts[1])
+        
+    if target_id is None: return await message.reply(ERR_TARGET)
+    
+    warns = await get_warns(target_id)
+    if not warns:
+        return await message.answer(f"📋 У @{target_username} нет активных варнов.")
+    lines = [f"📋 <b>Варны @{target_username}</b>\n"]
+    for i, w in enumerate(warns, 1):
+        lines.append(f"{i}. {w['created_at'][:10]} — {w['reason'] or '—'}")
+    lines.append(f"\nВсего активных: <b>{len(warns)}/3</b>")
+    await message.answer("\n".join(lines))
+
+@router.message(lambda m: m.chat.type == "private" and m.text and m.text.strip() in ("24", "48", "72"))
+async def cmd_mute20_reply(message: Message, bot: Bot):
+    from bot.models import get_active_fsm
+    fsm = await get_active_fsm("mute20", message.from_user.id)
+    if not fsm:
+        return
+    payload = json.loads(fsm["payload"])
+    hours = int(message.text.strip())
+    await _apply_mute20(bot, payload, hours * 3600)
+    await delete_fsm(fsm["id"])
+    await message.answer(f"✅ Мут на {hours} часов применён.")
+
+async def _apply_mute20(bot, payload, duration_sec):
+    rule = await get_rule(payload["rule_code"])
+    until = datetime.now() + timedelta(seconds=duration_sec)
+    try:
+        await bot.restrict_chat_member(payload["chat_id"], payload["target_id"],
+                                        full_mute_permissions(), until_date=until)
+    except Exception:
+        return
+    dur_text = seconds_to_text(duration_sec)
+    await bot.send_message(payload["chat_id"],
+        f"🔇 @{payload['target_username']} лишается права слова на {dur_text}\n"
+        f"💬 Причина: Правило 20 — {rule['text']}\n"
+        f"👮‍ Модератор: @{payload['actor_username']}")
+    await add_log(payload["actor_id"], payload["target_id"], "mute", "20", None, duration_sec, payload["chat_id"])
+
+async def check_fsm_timeouts(bot: Bot):
+    expired = await get_expired_fsm("mute20")
+    for row in expired:
+        payload = json.loads(row["payload"])
+        await _apply_mute20(bot, payload, 24 * 3600)
+        try:
+            await bot.send_message(payload["actor_id"], "⏳ Время вышло — применён мут 24 часа.")
+        except Exception:
+            pass
+        await delete_fsm(row["id"])
