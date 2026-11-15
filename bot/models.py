@@ -96,10 +96,8 @@ async def get_user(tg_id):
 
 async def set_user_role(tg_id, new_role):
     user = await get_user(tg_id)
-    # статусная роль — ставим флаг
     if new_role in STATUS_ROLES:
         await execute(f"UPDATE users SET has_{new_role}=1 WHERE telegram_id=?", (tg_id,))
-    # снятие с должности — возврат статуса по флагу
     if new_role == "member":
         if user["has_blat"]:
             new_role = "blat"
@@ -118,7 +116,17 @@ async def get_rule(code):
     return await fetchone("SELECT * FROM rules WHERE code=?", (code,))
 
 async def get_all_rules():
-    return await fetchall("SELECT * FROM rules ORDER BY code")
+    rules = await fetchall("SELECT * FROM rules")
+    
+    # Сортировка в Python для правильного порядка (1, 2.1, 3... 10)
+    def sort_key(r):
+        parts = str(r["code"]).split(".")
+        try:
+            return tuple(int(p) for p in parts)
+        except ValueError:
+            return (999, 999)
+            
+    return sorted(rules, key=sort_key)
 
 async def add_rule(code, text, duration_sec, duration_text, critical, recurrence_action, recurrence_sec, recurrence_text, special=None):
     await execute(
@@ -142,7 +150,7 @@ async def add_warn(user_id, moderator_id, reason, chat_id=None):
     await execute("INSERT INTO warns (user_id, moderator_id, reason, chat_id) VALUES (?, ?, ?, ?)",
                   (user_id, moderator_id, reason, chat_id))
 
-async def count_warns(user_id, days=None):
+async def count_warns(user_id, days=30):
     if days:
         row = await fetchone(
             "SELECT COUNT(*) as c FROM warns WHERE user_id=? AND created_at > datetime('now', ?)",
@@ -229,3 +237,24 @@ async def get_active_fsm(kind, user_id):
 
 async def delete_fsm(pk):
     await execute("DELETE FROM pending_fsm WHERE id=?", (pk,))
+
+async def get_all_staff():
+    """Возвращает список всех, у кого есть админская роль."""
+    query = """
+        SELECT * FROM users 
+        WHERE role NOT IN ('member', 'vip', 'blat', 'partner') 
+        ORDER BY 
+            CASE role
+                WHEN 'owner' THEN 1
+                WHEN 'tech_admin' THEN 2
+                WHEN 'deputy_owner' THEN 3
+                WHEN 'head' THEN 4
+                WHEN 'deputy_head' THEN 5
+                WHEN 'manager' THEN 6
+                WHEN 'senior_mod' THEN 7
+                WHEN 'moderator' THEN 8
+                WHEN 'trainee' THEN 9
+                ELSE 10
+            END
+    """
+    return await fetchall(query)
